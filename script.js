@@ -1,22 +1,71 @@
-// Pong with 10 levels — player (left/red), AI (right/blue)
+// Pong with 10 levels — improved playability (responsive canvas, single AudioContext, touch controls)
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 
-const W = canvas.width;
-const H = canvas.height;
+// logical game size (we keep game logic in this coordinate space)
+const LOGICAL_W = 900;
+const LOGICAL_H = 600;
 
 const ui = {
   playerScore: document.getElementById('player-score'),
   aiScore: document.getElementById('ai-score'),
   levelDisplay: document.getElementById('level'),
-  messages: document.getElementById('messages')
+  messages: document.getElementById('messages'),
+  startOverlay: document.getElementById('startOverlay'),
+  startBtn: document.getElementById('startBtn'),
+  muteBtn: document.getElementById('muteBtn'),
+  touchUp: document.getElementById('touchUp'),
+  touchDown: document.getElementById('touchDown'),
+  touchControls: document.getElementById('touchControls'),
+  gameWrap: document.getElementById('game-wrap')
 };
+
+let audioCtx = null;
+let soundEnabled = true;
+function ensureAudio(){
+  if(audioCtx) return;
+  try{
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }catch(e){
+    audioCtx = null;
+  }
+}
+
+function playTone(freq, time=0.06, vol=0.02){
+  if(!soundEnabled) return;
+  if(!audioCtx) return;
+  try{
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.type = 'sine';
+    o.frequency.value = freq;
+    g.gain.value = vol;
+    o.connect(g); g.connect(audioCtx.destination);
+    const now = audioCtx.currentTime;
+    o.start(now);
+    g.gain.setValueAtTime(vol, now);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + time);
+    o.stop(now + time + 0.02);
+  }catch(e){}
+}
+
+// high-DPI / responsive canvas setup
+function resizeCanvas(){
+  const dpr = Math.max(1, window.devicePixelRatio || 1);
+  // canvas CSS size follows its element size; we set internal size scaled by dpr
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = Math.max(1, Math.floor(rect.width * dpr));
+  canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+  // map logical coordinate space to physical canvas
+  ctx.setTransform(canvas.width / LOGICAL_W, 0, 0, canvas.height / LOGICAL_H, 0, 0);
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
 
 let paused = true;
 let running = false;
 
 const levels = [
-  // 10 levels (index 0 -> level 1)
   {ballSpeed: 3, paddleHeight: 120, aiSkill: 0.40, obstacles: 0},
   {ballSpeed: 3.6, paddleHeight: 110, aiSkill: 0.45, obstacles: 0},
   {ballSpeed: 4.2, paddleHeight: 100, aiSkill: 0.50, obstacles: 0},
@@ -26,24 +75,20 @@ const levels = [
   {ballSpeed: 6.8, paddleHeight: 74, aiSkill: 0.72, obstacles: 2},
   {ballSpeed: 7.6, paddleHeight: 68, aiSkill: 0.78, obstacles: 3},
   {ballSpeed: 8.4, paddleHeight: 62, aiSkill: 0.84, obstacles: 3},
-  {ballSpeed: 9.4, paddleHeight: 56, aiSkill: 0.90, obstacles: 4} // Level 10
+  {ballSpeed: 9.4, paddleHeight: 56, aiSkill: 0.90, obstacles: 4}
 ];
 
-let state = {
-  level: 1,
-  playerScore: 0,
-  aiScore: 0
-};
+let state = { level: 1, playerScore: 0, aiScore: 0 };
 
 const paddle = (x, height, color) => ({
-  x, y: (H - height) / 2, w: 12, h: height, color
+  x, y: (LOGICAL_H - height) / 2, w: 12, h: height, color
 });
 
 let player = paddle(20, levels[0].paddleHeight, '#ff3b3b');
-let ai = paddle(W - 32, levels[0].paddleHeight, '#3b8bff');
+let ai = paddle(LOGICAL_W - 32, levels[0].paddleHeight, '#3b8bff');
 
 let ball = {
-  x: W / 2, y: H / 2, r: 9,
+  x: LOGICAL_W / 2, y: LOGICAL_H / 2, r: 9,
   vx: levels[0].ballSpeed * (Math.random() > 0.5 ? 1 : -1),
   vy: (Math.random() * 2 - 1) * 2,
   color: '#ffffff'
@@ -52,11 +97,11 @@ let ball = {
 let obstacles = [];
 
 function resetBall(direction = 0) {
-  ball.x = W / 2;
-  ball.y = H / 2;
+  ball.x = LOGICAL_W / 2;
+  ball.y = LOGICAL_H / 2;
   const lvl = levels[state.level - 1];
   const base = lvl.ballSpeed;
-  const angle = (Math.random() * Math.PI / 4) - (Math.PI / 8); // small angle
+  const angle = (Math.random() * Math.PI / 4) - (Math.PI / 8);
   const dir = direction === 0 ? (Math.random() > 0.5 ? 1 : -1) : direction;
   ball.vx = base * dir * Math.cos(angle);
   ball.vy = base * Math.sin(angle);
@@ -66,30 +111,30 @@ function applyLevelSettings() {
   const lvl = levels[state.level - 1];
   player.h = lvl.paddleHeight;
   ai.h = lvl.paddleHeight;
-  // regenerate obstacles:
   obstacles = [];
   for (let i = 0; i < lvl.obstacles; i++) {
-    // fixed-size obstacles at random Y
     const ow = 14, oh = 70;
-    const ox = W/2 + (i%2 ? 60 : -60) + (i*18);
-    const oy = 60 + Math.random()*(H - 120 - oh);
-    obstacles.push({x:ox, y:oy, w:ow, h:oh, color:'#2a354f'});
+    const ox = LOGICAL_W / 2 + (i % 2 ? 60 : -60) + (i * 18);
+    const oy = 60 + Math.random() * (LOGICAL_H - 120 - oh);
+    obstacles.push({ x: ox, y: oy, w: ow, h: oh, color: '#2a354f' });
   }
 }
 
 function drawNet(){
   ctx.fillStyle = 'rgba(255,255,255,0.06)';
   const step = 18;
-  for(let y=10;y<H;y+=step){
-    ctx.fillRect(W/2 -2, y, 4, 10);
+  for(let y=10;y<LOGICAL_H;y+=step){
+    ctx.fillRect(LOGICAL_W/2 -2, y, 4, 10);
   }
 }
 
 function draw(){
-  ctx.clearRect(0,0,W,H);
-  // background
+  // clear logical area
+  ctx.clearRect(0,0,LOGICAL_W,LOGICAL_H);
+
+  // subtle bg
   ctx.fillStyle = 'rgba(255,255,255,0.02)';
-  ctx.fillRect(0,0,W,H);
+  ctx.fillRect(0,0,LOGICAL_W,LOGICAL_H);
 
   drawNet();
 
@@ -112,17 +157,16 @@ function draw(){
   ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI*2);
   ctx.fill();
 
-  // UI overlay text inside canvas (center)
+  // UI text
   ctx.fillStyle = 'rgba(255,255,255,0.06)';
   ctx.font = '12px Inter, system-ui, Arial';
   ctx.textAlign = 'center';
-  ctx.fillText(`Difficulty Level ${state.level}`, W/2, 20);
+  ctx.fillText(`Difficulty Level ${state.level}`, LOGICAL_W/2, 20);
 }
 
 function clamp(v, a, b){ return Math.max(a, Math.min(b, v)); }
 
 function rectCircleCollide(rx, ry, rw, rh, cx, cy, cr){
-  // Find closest point to circle
   const closestX = clamp(cx, rx, rx + rw);
   const closestY = clamp(cy, ry, ry + rh);
   const dx = cx - closestX;
@@ -130,52 +174,32 @@ function rectCircleCollide(rx, ry, rw, rh, cx, cy, cr){
   return dx*dx + dy*dy <= cr*cr;
 }
 
-function playTone(freq, time=0.06, vol=0.02){
-  if(!window.AudioContext) return;
-  try{
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const o = ctx.createOscillator();
-    const g = ctx.createGain();
-    o.type = 'sine';
-    o.frequency.value = freq;
-    g.gain.value = vol;
-    o.connect(g); g.connect(ctx.destination);
-    o.start();
-    g.gain.setTargetAtTime(0, ctx.currentTime + time*0.8, 0.01);
-    o.stop(ctx.currentTime + time);
-    setTimeout(()=>{ try{ ctx.close(); }catch(e){} }, 200);
-  }catch(e){}
-}
-
 function update(dt){
   if(paused) return;
 
-  // move ball
-  ball.x += ball.vx * dt;
-  ball.y += ball.vy * dt;
+  // move ball (dt in seconds)
+  ball.x += ball.vx * dt * 60;
+  ball.y += ball.vy * dt * 60;
 
   // walls
   if(ball.y - ball.r < 0){
     ball.y = ball.r;
     ball.vy *= -1;
     playTone(420, 0.04, 0.02);
-  } else if(ball.y + ball.r > H) {
-    ball.y = H - ball.r;
+  } else if(ball.y + ball.r > LOGICAL_H) {
+    ball.y = LOGICAL_H - ball.r;
     ball.vy *= -1;
     playTone(420, 0.04, 0.02);
   }
 
   // paddle collisions
-  // player
   if(ball.vx < 0 && rectCircleCollide(player.x, player.y, player.w, player.h, ball.x, ball.y, ball.r)){
     ball.x = player.x + player.w + ball.r;
-    ball.vx = Math.abs(ball.vx) * 1.03; // slightly accelerate
-    // adjust angle depending on hit position
+    ball.vx = Math.abs(ball.vx) * 1.03;
     const rel = (ball.y - (player.y + player.h/2)) / (player.h/2);
     ball.vy += rel * 2;
     playTone(720, 0.03, 0.02);
   }
-  // ai
   if(ball.vx > 0 && rectCircleCollide(ai.x, ai.y, ai.w, ai.h, ball.x, ball.y, ball.r)){
     ball.x = ai.x - ball.r;
     ball.vx = -Math.abs(ball.vx) * 1.03;
@@ -184,17 +208,16 @@ function update(dt){
     playTone(520, 0.03, 0.02);
   }
 
-  // obstacles collisions (bounce and reverse X)
+  // obstacles collisions
   obstacles.forEach(o=>{
     if(rectCircleCollide(o.x - o.w/2, o.y, o.w, o.h, ball.x, ball.y, ball.r)){
-      // simple reflect
       ball.vx *= -1.02;
       ball.vy *= 1.01;
       playTone(320, 0.03, 0.02);
     }
   });
 
-  // score
+  // scoring
   if(ball.x < -30){
     state.aiScore++;
     ui.aiScore.textContent = state.aiScore;
@@ -202,15 +225,13 @@ function update(dt){
     playTone(160, 0.18, 0.04);
     paused = true;
     running = false;
-    // do not change level on AI point
-  } else if(ball.x > W + 30){
+  } else if(ball.x > LOGICAL_W + 30){
     state.playerScore++;
     ui.playerScore.textContent = state.playerScore;
     playTone(880, 0.18, 0.04);
     paused = true;
     running = false;
     ui.messages.textContent = 'You scored — press Space to continue';
-    // advance level when player scores (up to 10)
     if(state.level < 10){
       state.level++;
       applyLevelSettings();
@@ -220,48 +241,41 @@ function update(dt){
     }
   }
 
-  // AI movement (simple predictive with skill factor)
+  // AI movement
   const lvl = levels[state.level - 1];
   const targetY = ball.y - (ai.h / 2);
-  // move fraction towards the target scaled by aiSkill and dt
   const skill = lvl.aiSkill;
-  ai.y += (targetY - ai.y) * (skill * 0.12 * Math.min(1, dt*60));
-  ai.y = clamp(ai.y, 0, H - ai.h);
+  ai.y += (targetY - ai.y) * (skill * 0.12 * Math.min(1, dt * 60));
+  ai.y = clamp(ai.y, 0, LOGICAL_H - ai.h);
 
-  // enforce player boundaries
-  player.y = clamp(player.y, 0, H - player.h);
+  player.y = clamp(player.y, 0, LOGICAL_H - player.h);
 
-  // simple friction on velocities so it stays numeric-stable
+  // small damping
   ball.vx *= 0.999;
   ball.vy *= 0.999;
 }
 
 let lastTime = performance.now();
 function loop(now){
-  const dt = Math.min(1/30, (now - lastTime) / (1000 / 60)); // normalized delta
+  const seconds = (now - lastTime) / 1000;
+  const dt = Math.min(1/15, seconds); // clamp dt to avoid big jumps (in seconds)
   update(dt);
   draw();
   lastTime = now;
   requestAnimationFrame(loop);
 }
 
-// keyboard
+// input
 const keys = {};
 window.addEventListener('keydown', e=>{
   keys[e.key.toLowerCase()] = true;
 
-  if(e.key === ' '){
-    if(!running){
-      // start round
-      applyLevelSettings();
-      resetBall();
-      paused = false;
-      running = true;
-      ui.messages.textContent = '';
-    } else {
-      // space during running does nothing
-    }
+  // start on Space
+  if(e.code === 'Space'){
     e.preventDefault();
+    if(!running){
+      startRound();
+    }
   } else if(e.key.toLowerCase() === 'p'){
     paused = !paused;
     ui.messages.textContent = paused ? 'Paused' : '';
@@ -272,8 +286,7 @@ window.addEventListener('keyup', e=>{
 });
 
 function processInput(dt){
-  // player input: W/S and ArrowUp/ArrowDown
-  const speed = 6 * Math.max(0.8, (player.h / 120)); // smaller paddles slightly faster control
+  const speed = 6 * Math.max(0.8, (player.h / 120));
   if(keys['w'] || keys['arrowup']){
     player.y -= speed * 60 * dt;
   }
@@ -282,25 +295,72 @@ function processInput(dt){
   }
 }
 
-// hook into update to handle input
 const baseUpdate = update;
 update = function(dt){
   processInput(dt);
   baseUpdate(dt);
 };
 
+// start / focus handling
+function startRound(){
+  ensureAudio();
+  // resume audio context if suspended (user gesture required)
+  if(audioCtx && audioCtx.state === 'suspended'){
+    audioCtx.resume().catch(()=>{});
+  }
+  ui.startOverlay.style.display = 'none';
+  ui.touchControls.setAttribute('aria-hidden', 'false');
+  paused = false;
+  running = true;
+  ui.messages.textContent = '';
+  applyLevelSettings();
+  resetBall();
+  ui.gameWrap.focus();
+}
+
+// make sure game-wrap is focusable and clicking focuses
+ui.gameWrap.addEventListener('click', () => ui.gameWrap.focus());
+ui.startBtn.addEventListener('click', () => startRound());
+ui.muteBtn.addEventListener('click', () => {
+  soundEnabled = !soundEnabled;
+  ui.muteBtn.textContent = soundEnabled ? 'Mute Sounds' : 'Unmute';
+});
+
+// touch controls -> simulate key press while pressed
+let touchInterval = null;
+function startTouch(up){
+  if(up) {
+    keys['arrowup'] = true;
+  } else {
+    keys['arrowdown'] = true;
+  }
+}
+function stopTouch(){
+  keys['arrowup'] = false;
+  keys['arrowdown'] = false;
+}
+ui.touchUp.addEventListener('touchstart', (e)=>{ e.preventDefault(); startTouch(true); }, {passive:false});
+ui.touchUp.addEventListener('touchend', (e)=>{ e.preventDefault(); stopTouch(); }, {passive:false});
+ui.touchDown.addEventListener('touchstart', (e)=>{ e.preventDefault(); startTouch(false); }, {passive:false});
+ui.touchDown.addEventListener('touchend', (e)=>{ e.preventDefault(); stopTouch(); }, {passive:false});
+
+// keyboard focus on load
+ui.gameWrap.addEventListener('keydown', e => {
+  // keep keyboard inside game-wrap
+});
+
 // initial UI
 ui.playerScore.textContent = state.playerScore;
 ui.aiScore.textContent = state.aiScore;
 ui.levelDisplay.textContent = `Level: ${state.level} / 10`;
-ui.messages.textContent = 'Press Space to Start';
+ui.messages.textContent = 'Press Space or Start to begin';
 
 // initial settings
 applyLevelSettings();
 resetBall(1);
 
-// start loop
+// begin loop
 requestAnimationFrame(loop);
 
-// expose a simple debug function
+// expose for debugging
 window._pong = {state, player, ai, ball, levels, obstacles};
